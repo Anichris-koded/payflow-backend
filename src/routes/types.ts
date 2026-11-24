@@ -73,6 +73,15 @@ export interface MerchantProfile {
   ledger: number;
 }
 
+export type NotificationEvent = "charged" | "charge.failing" | "charge.recovered";
+
+export interface MerchantNotificationPreferences {
+  merchant: string;
+  events: NotificationEvent[];
+  /** Unix seconds; null when the merchant has not saved preferences. */
+  updatedAt: number | null;
+}
+
 export interface MandateRow extends TokenFields {
   id: number;
   subscriber: string;

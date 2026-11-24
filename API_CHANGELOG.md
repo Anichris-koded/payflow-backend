@@ -60,6 +60,11 @@ release that ships them numbers them here.
 
 ### Added
 
+- `GET` and `PUT /api/merchants/:address/notification-preferences` — read or
+  replace the merchant's persisted webhook event preferences. Defaults keep
+  all supported notifications enabled; updates accept `charged`,
+  `charge.failing` and `charge.recovered`, and require a merchant signature or
+  a SEP-10 bearer token.
 - `open` on every plan in `/api/plans` — true while the plan accepts new
   subscribers, false once it is closed (#358).
 - `410 plan_gone` for `GET /api/plans/:id` and `/stats` on a deactivated

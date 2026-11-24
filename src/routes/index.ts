@@ -21,6 +21,7 @@ import { tokensRouter } from "./tokens.ts";
 import { streamRouter } from "./stream.ts";
 import { vaultRouter } from "./vault.ts";
 import { webhooksRouter } from "./webhooks.ts";
+import { notificationPreferencesRouter } from "./notification-preferences.ts";
 
 export { defaultMerchantSummaryCache, MerchantSummaryCache };
 
@@ -112,6 +113,7 @@ export function buildRoutes(
   r.use(protocolRouter(db));
   r.use(mandatesRouter(db, tokens));
   r.use(merchantsRouter(db, summaryCache, defaultToken));
+  r.use(notificationPreferencesRouter(db, auth));
   r.use(subscribersRouter(db, auth));
   r.use(statsRouter(db));
   r.use(tokensRouter(tokens));

@@ -7,6 +7,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { EventEmitter } from "node:events";
 import { asStorage } from "./store/index.ts";
 import type { Storage } from "./store/types.ts";
+import { notificationEnabled } from "./notification-preferences.ts";
 import { big, num, str } from "./stellar.ts";
 import type { DecodedEvent } from "./stellar.ts";
 import type {
@@ -596,7 +597,9 @@ export class WebhookDispatcher {
   async onApplied(e: DecodedEvent): Promise<void> {
     if (e.name !== "charged") return;
     const [mandateId, , merchant] = e.topics;
-    const webhooks = await this.listWebhooks(str(merchant));
+    const merchantAddress = str(merchant);
+    if (!await notificationEnabled(this.db, merchantAddress, e.name)) return;
+    const webhooks = await this.listWebhooks(merchantAddress);
     if (webhooks.length === 0) return;
 
     const eventId = `charge:${e.txHash}`;
@@ -621,6 +624,7 @@ export class WebhookDispatcher {
    * every retry of the delivery carries the same id.
    */
   async onChargeStreak(e: ChargeStreakEvent): Promise<void> {
+    if (!await notificationEnabled(this.db, e.merchant, e.kind)) return;
     const webhooks = await this.listWebhooks(e.merchant);
     if (webhooks.length === 0) return;
 
