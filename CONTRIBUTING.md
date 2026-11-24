@@ -26,6 +26,7 @@ docker compose up
 | Job | Command |
 |---|---|
 | `lint` | `npm run lint` |
+| `prometheus rules` | `promtool check rules deploy/prometheus/alerts.yml` (in the official Prometheus image) |
 | `typecheck` | `npm run typecheck` (the sources and the tests) |
 | `test` | `npm test` |
 | `coverage` | `npm run test:coverage` (the tests, with a coverage threshold) |

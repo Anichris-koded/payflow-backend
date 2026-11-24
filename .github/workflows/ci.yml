@@ -34,6 +34,24 @@ jobs:
       - run: npm ci
       - run: npm run lint
 
+  # Validates the Prometheus alert rules the same way a Prometheus server
+  # loads them. promtool ships in the official image, so the check needs no
+  # setup beyond Docker; the image is pinned by digest like the other actions.
+  prometheus:
+    name: prometheus rules
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: promtool check rules
+        run: >-
+          docker run --rm
+          --volume "$PWD/deploy/prometheus:/rules:ro"
+          --entrypoint promtool
+          prom/prometheus:v3.16.0@sha256:e04987641b57704f408e31f6373ba4138ecf27cb4a165d24aabb6c38fddd0f06
+          check rules /rules/alerts.yml
+
   typecheck:
     name: typecheck
     runs-on: ubuntu-latest

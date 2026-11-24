@@ -1,0 +1,151 @@
+# Prometheus alert rules for the Payflow backend.
+#
+# Load this file with `rule_files` in prometheus.yml; it assumes the service's
+# /metrics endpoint is scraped (METRICS_ENABLED=true).
+#
+# Thresholds, and why they are what they are:
+#
+# - Indexer lag: 120 ledgers for 10 minutes. /health and /ready call the
+#   projection "catching up" above the same 120-ledger limit (MAX_LAG in
+#   src/app.ts), so the alert fires when the API has already stopped reporting
+#   itself ready for traffic.
+# - Keeper failure rate: more than 20% of settlement attempts failing over 15
+#   minutes, with at least 5 attempts in the window so one transient failure
+#   does not page. A failed charge is a subscriber not charged; a fifth of a
+#   pass failing is not an RPC blip.
+# - Keeper balance: below 2 XLM (20,000,000 stroops) for 10 minutes. The keeper
+#   pays BASE_FEE (100 stroops) per operation plus the Soroban resource fee, so
+#   2 XLM is thousands of charges: enough warning to top the account up before
+#   settlement stops.
+# - Webhook failure rate: more than 20% of delivery attempts failing over 15
+#   minutes, with at least 5 attempts. A webhook that exhausts its retries is
+#   deactivated, so the merchant silently stops receiving `charged` events.
+# - 5xx rate: more than 5% of API requests answering 5xx over 5 minutes, with at
+#   least 0.1 requests/second, so a handful of failures on a quiet service does
+#   not page while a broken route still does.
+#
+# Not every series below is exported by the service yet:
+#
+# - `payflow_keeper_balance_stroops` is the native XLM balance of the keeper
+#   account. The keeper does not publish it yet (tracked by the keeper fee
+#   balance issue, #259).
+# - `payflow_webhook_deliveries_total{result}` and
+#   `payflow_http_request_duration_seconds_count{status}` are the series the
+#   Grafana dashboard (#167) already queries; the webhook counter and the HTTP
+#   histogram (#286) ship with their own instrumentation.
+#
+# Those rules are inert until the series exist, exactly as the matching
+# dashboard panels stay empty. Keeping them here means the alerting does not
+# need a second change when the instrumentation lands. `promtool check rules`
+# validates the file either way; it does not require the series to exist.
+
+groups:
+  - name: payflow
+    rules:
+      - alert: PayflowIndexerLagging
+        expr: max by (network) (payflow_indexer_lag) > 120
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The Payflow indexer is {{ $value }} ledgers behind on {{ $labels.network }}"
+          description: >-
+            The projection has trailed the network by more than 120 ledgers for
+            10 minutes, so /ready has been answering 503 and the API is serving
+            stale data. Check /health for the indexer's last error and the
+            RPC node's health; replay from an earlier ledger only if the cursor
+            is stuck (see the runbook).
+          runbook_url: https://github.com/MMM-pay/payflow-backend/blob/main/docs/RUNBOOK.md#2-incident-1-indexer-stuck-or-lagging
+
+      - alert: PayflowKeeperFailing
+        expr: >-
+          (
+            sum(rate(payflow_charges_failed_total[15m]))
+            /
+            clamp_min(
+              sum(rate(payflow_charges_settled_total[15m]))
+              +
+              sum(rate(payflow_charges_failed_total[15m])),
+              1e-9
+            )
+          ) > 0.2
+          and
+          (
+            increase(payflow_charges_settled_total[15m])
+            +
+            increase(payflow_charges_failed_total[15m])
+          ) >= 5
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $value | humanizePercentage }} of Payflow keeper charges are failing"
+          description: >-
+            More than 20% of settlement attempts failed over the last 15 minutes
+            (at least 5 attempts). Subscribers are not being charged. Check the
+            keeper logs for simulation errors, the vault balance and the RPC
+            node before retrying (see the runbook).
+          runbook_url: https://github.com/MMM-pay/payflow-backend/blob/main/docs/RUNBOOK.md#4-incident-3-keeper-out-of-xlm
+
+      - alert: PayflowKeeperBalanceLow
+        expr: min by (network) (payflow_keeper_balance_stroops) < 20000000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The Payflow keeper holds only {{ $value | humanize }} stroops on {{ $labels.network }}"
+          description: >-
+            The keeper's native XLM balance is below 2 XLM (20,000,000 stroops)
+            for 10 minutes. It pays the network and Soroban fees for every
+            charge, so settlement will stop once it runs out. Fund the keeper
+            account (see the runbook).
+          runbook_url: https://github.com/MMM-pay/payflow-backend/blob/main/docs/RUNBOOK.md#4-incident-3-keeper-out-of-xlm
+
+      - alert: PayflowWebhookDeliveriesFailing
+        expr: >-
+          (
+            sum by (network) (rate(payflow_webhook_deliveries_total{result="failed"}[15m]))
+            /
+            clamp_min(
+              sum by (network) (rate(payflow_webhook_deliveries_total{result=~"delivered|failed"}[15m])),
+              1e-9
+            )
+          ) > 0.2
+          and
+          sum by (network) (increase(payflow_webhook_deliveries_total{result=~"delivered|failed"}[15m])) >= 5
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value | humanizePercentage }} of Payflow webhook deliveries are failing"
+          description: >-
+            More than 20% of webhook delivery attempts failed over the last 15
+            minutes (at least 5 attempts) on {{ $labels.network }}. A webhook
+            that exhausts its retries is deactivated, so the merchant stops
+            receiving `charged` events. Check the response status and error on
+            the webhook's delivery history.
+          runbook_url: https://github.com/MMM-pay/payflow-backend/blob/main/README.md#metrics
+
+      - alert: PayflowHttp5xxRateHigh
+        expr: >-
+          (
+            sum by (network) (rate(payflow_http_request_duration_seconds_count{status=~"5.."}[5m]))
+            /
+            clamp_min(
+              sum by (network) (rate(payflow_http_request_duration_seconds_count[5m])),
+              1e-9
+            )
+          ) > 0.05
+          and
+          sum by (network) (rate(payflow_http_request_duration_seconds_count[5m])) > 0.1
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $value | humanizePercentage }} of Payflow API requests are returning 5xx"
+          description: >-
+            More than 5% of requests answered 5xx for 10 minutes on
+            {{ $labels.network }}, with at least 0.1 requests/second. Check the
+            error logs for the failing route and whether the projection or RPC
+            node is unavailable (see the runbook).
+          runbook_url: https://github.com/MMM-pay/payflow-backend/blob/main/docs/RUNBOOK.md
