@@ -128,7 +128,7 @@ npm install
 cp .env.example .env      # already points at the deployed testnet contracts
 npm test                  # Tests run without external network access
 npm run test:coverage     # the same tests, with a coverage report and a threshold
-npm run dev
+npm run dev               # brings up the full local stack (API, indexer, keeper)
 ```
 
 Index until caught up with the network, then exit (cron, backfills):
@@ -1132,7 +1132,8 @@ Docker](#running-it-in-docker)).
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). CI runs `lint`, `typecheck`, `test`,
+See [CONTRIBUTING.md](CONTRIBUTING.md), including how to bring up the full
+local stack with a single command. CI runs `lint`, `typecheck`, `test`,
 `build`, a container build and a production `audit`; all six must pass, and
 Dependabot keeps dependencies current. Changes are recorded in
 [CHANGELOG.md](CHANGELOG.md), and changes to the API surface in
