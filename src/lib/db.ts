@@ -182,6 +182,12 @@ CREATE TABLE IF NOT EXISTS merchant_profiles (
   ledger   INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS merchant_notification_preferences (
+  merchant  TEXT    PRIMARY KEY,
+  events    TEXT    NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS webhooks (
   id          INTEGER PRIMARY KEY,
   merchant    TEXT    NOT NULL,

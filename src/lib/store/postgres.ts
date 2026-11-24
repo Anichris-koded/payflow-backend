@@ -127,6 +127,11 @@ CREATE TABLE IF NOT EXISTS merchant_profiles (
   url TEXT NOT NULL DEFAULT '',
   ledger BIGINT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS merchant_notification_preferences (
+  merchant TEXT PRIMARY KEY,
+  events TEXT NOT NULL,
+  updated_at BIGINT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS contract_upgrades (
   contract_id TEXT NOT NULL,
   tx_hash TEXT NOT NULL,

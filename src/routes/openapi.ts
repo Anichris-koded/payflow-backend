@@ -270,6 +270,15 @@ const addressParameter = (name = "address"): ParameterObject => ({
   schema: { type: "string", description: ADDRESS_DESCRIPTION },
 });
 
+/** A path parameter that must be a merchant account rather than a contract. */
+const merchantAccountParameter = (): ParameterObject => ({
+  name: "address",
+  in: "path",
+  required: true,
+  description: "The merchant's Stellar account address (G...).",
+  schema: { type: "string", pattern: "^G[A-Z2-7]{55}$" },
+});
+
 /** The structured error envelope every non-2xx response uses. */
 const errorResponse = (description: string): ResponseObject => ({
   description,
@@ -896,6 +905,68 @@ function apiPaths(root: string): Record<string, PathItemObject> {
             },
           },
           "400": invalidRequest(),
+        },
+      },
+    },
+    [p("/merchants/{address}/notification-preferences")]: {
+      get: {
+        tags: ["merchants"],
+        summary: "Get a merchant's notification preferences",
+        description:
+          "Returns the event types that trigger the merchant's webhook deliveries. If no preference has been saved, every supported event is enabled. The caller proves control of the merchant account with an ed25519 signature over `payflow-notification-preferences:get:v1:<merchant>:<timestamp>`, or with a SEP-10 bearer token for that account.",
+        operationId: `getMerchantNotificationPreferences${operationSuffix(root)}`,
+        parameters: [
+          merchantAccountParameter(),
+          { name: "timestamp", in: "query", required: false, description: "Unix seconds; required without a SEP-10 bearer token.", schema: { type: "integer" } },
+          { name: "signature", in: "query", required: false, description: "Base64 ed25519 signature of the documented GET message; required without a SEP-10 bearer token.", schema: { type: "string" } },
+        ],
+        responses: {
+          "200": {
+            description: "The merchant's notification preferences.",
+            content: {
+              "application/json": { schema: { $ref: "#/components/schemas/MerchantNotificationPreferences" } },
+            },
+          },
+          "400": invalidRequest(),
+          "401": errorResponse('The signature is invalid or expired, or the bearer token belongs to another account (error.code = "unauthorized").'),
+        },
+      },
+      put: {
+        tags: ["merchants"],
+        summary: "Set a merchant's notification preferences",
+        description:
+          "Replaces the event types that trigger the merchant's webhook deliveries. An empty list disables all event deliveries. Without a SEP-10 bearer token for this account, sign `payflow-notification-preferences:set:v1:<merchant>:<sorted comma-separated events>:<timestamp>` with the merchant's ed25519 key.",
+        operationId: `putMerchantNotificationPreferences${operationSuffix(root)}`,
+        parameters: [merchantAccountParameter()],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  events: {
+                    type: "array",
+                    items: { type: "string", enum: ["charged", "charge.failing", "charge.recovered"] },
+                    description: "Unique event names to enable; an empty array disables all notifications.",
+                  },
+                  timestamp: { type: "integer", description: "Unix seconds; required without a SEP-10 bearer token." },
+                  signature: { type: "string", description: "Base64 ed25519 signature of the documented SET message; required without a SEP-10 bearer token." },
+                },
+                required: ["events"],
+              },
+            },
+          },
+        },
+        responses: {
+          "200": {
+            description: "The saved notification preferences.",
+            content: {
+              "application/json": { schema: { $ref: "#/components/schemas/MerchantNotificationPreferences" } },
+            },
+          },
+          "400": invalidRequest(),
+          "401": errorResponse('The signature is invalid or expired, or the bearer token belongs to another account (error.code = "unauthorized").'),
         },
       },
     },
@@ -1739,6 +1810,29 @@ function servicePaths(): Record<string, PathItemObject> {
 function componentSchemas(): Record<string, SchemaObject> {
   return {
     AmountString: amountSchema(),
+    NotificationEvent: {
+      type: "string",
+      enum: ["charged", "charge.failing", "charge.recovered"],
+      description: "An event type that can trigger a merchant webhook delivery.",
+    },
+    MerchantNotificationPreferences: {
+      type: "object",
+      description:
+        "The event types that trigger a merchant's webhook deliveries. When no preference has been saved, every supported event is enabled.",
+      properties: {
+        merchant: { type: "string", description: "The merchant's Stellar account address." },
+        events: {
+          type: "array",
+          items: { $ref: "#/components/schemas/NotificationEvent" },
+          description: "Unique event names enabled for delivery; an empty list disables all.",
+        },
+        updatedAt: {
+          type: ["integer", "null"],
+          description: "Unix seconds when saved; null when the default applies.",
+        },
+      },
+      required: ["merchant", "events", "updatedAt"],
+    },
     Error: {
       type: "object",
       description:
@@ -2172,7 +2266,7 @@ function componentSchemas(): Record<string, SchemaObject> {
         subscriber: { type: "string", description: ADDRESS_DESCRIPTION },
         exportedAt: { type: "string", format: "date-time", description: "When this export was generated." },
         mandates: { type: "array", items: { $ref: "#/components/schemas/Mandate" } },
-        charges: { type: "array", items: { $ref: "#/components/schemas/ChargeRow" } },
+        charges: { type: "array", items: { $ref: "#/components/schemas/Charge" } },
         chargeAttempts: { type: "array", items: { $ref: "#/components/schemas/ChargeAttempt" } },
         totalPaid: amount(),
       },

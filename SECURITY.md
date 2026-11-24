@@ -27,6 +27,11 @@ and impact. Acknowledgement within 72 hours.
 
 ## Operational notes
 
+- **Enabled components fail closed on missing credentials.** Startup refuses
+  `KEEPER_ENABLED=true` without `KEEPER_SECRET`, and refuses a configured
+  `SEP10_SIGNING_KEY` without `SEP10_JWT_SECRET` and `SEP10_HOME_DOMAIN`.
+  Leave the feature disabled when its credentials are not provisioned; set
+  signing keys through the host's secret store, not a committed `.env`.
 - **`KEEPER_SECRET` is a live signing key.** It pays transaction fees and
   nothing else — it holds no user funds and has no on-chain privilege — but a
   leak lets an attacker drain that account's XLM. Set it through the host's
@@ -39,6 +44,10 @@ and impact. Acknowledgement within 72 hours.
   no read-API route can reach, and no read-API credential (including a SEP-10 JWT)
   is accepted there. Keep `ADMIN_TOKEN` in the host's secret store; rotate it if
   it is ever exposed, without touching `SEP10_SIGNING_KEY` or `SEP10_JWT_SECRET`.
+- **Merchant notification preferences are account-scoped.** Reads and writes
+  require a fresh signature from the merchant's Stellar key or a SEP-10 JWT
+  issued to that same account. The update only accepts the supported webhook
+  event names; an empty list disables notifications.
 - **SQLite is a projection, not a source of truth.** It can be deleted and
   rebuilt from chain at any time. Never treat it as authoritative for money.
 - **RPC history is bounded.** Soroban RPC retains a limited ledger window. A

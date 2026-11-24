@@ -23,9 +23,11 @@ import type {
   MandatePage,
   MandateRow,
   MerchantChurnResponse,
+  MerchantNotificationPreferences,
   MerchantRevenueResponse,
   MerchantSubscribersResponse,
   MerchantSummary,
+  NotificationEvent,
   PlanPage,
   PlanRow,
   PlanStatsResponse,
@@ -56,10 +58,12 @@ export type {
   MandatePage,
   MandateRow,
   MerchantChurnResponse,
+  MerchantNotificationPreferences,
   MerchantRevenueResponse,
   MerchantSubscriber,
   MerchantSubscribersResponse,
   MerchantSummary,
+  NotificationEvent,
   PlanPage,
   PlanRow,
   PlanStatsResponse,
@@ -118,6 +122,13 @@ export interface ChargesQuery extends PageQuery {
   to?: number | string;
 }
 
+export interface NotificationPreferencesProof {
+  /** Unix seconds, within ten minutes of the API's clock. */
+  timestamp: number;
+  /** Base64 ed25519 signature of the endpoint's documented message. */
+  signature: string;
+}
+
 export interface PayflowClientOptions {
   /** Base URL of the API, e.g. `https://payflow-backend.onrender.com`. */
   baseUrl: string;
@@ -155,7 +166,11 @@ export class PayflowClient {
     for (const [key, value] of Object.entries(query ?? {})) {
       if (value !== undefined) url.searchParams.set(key, String(value));
     }
-    const res = await this.fetchImpl(url.toString());
+    return this.request<T>(url);
+  }
+
+  private async request<T>(url: URL, init?: RequestInit): Promise<T> {
+    const res = await this.fetchImpl(url.toString(), init);
     const text = await res.text();
     let body: unknown = null;
     if (text) {
@@ -169,6 +184,14 @@ export class PayflowClient {
       throw new PayflowApiError(res.status, body);
     }
     return body as T;
+  }
+
+  private put<T>(path: string, body: unknown): Promise<T> {
+    return this.request<T>(new URL(this.baseUrl + path), {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
   }
 
   health(): Promise<HealthResponse> {
@@ -215,6 +238,32 @@ export class PayflowClient {
 
   merchantSummary(address: string): Promise<MerchantSummary> {
     return this.get<MerchantSummary>(`${API_PATH}/merchants/${encodeURIComponent(address)}/summary`);
+  }
+
+  /** Read notification preferences using the merchant's signed GET proof. */
+  merchantNotificationPreferences(
+    address: string,
+    proof: NotificationPreferencesProof,
+  ): Promise<MerchantNotificationPreferences> {
+    return this.get<MerchantNotificationPreferences>(
+      `${API_PATH}/merchants/${encodeURIComponent(address)}/notification-preferences`,
+      proof,
+    );
+  }
+
+  /**
+   * Replace the webhook event types enabled for this merchant. Sign
+   * `payflow-notification-preferences:set:v1:<merchant>:<sorted events>:<timestamp>`.
+   */
+  setMerchantNotificationPreferences(
+    address: string,
+    events: NotificationEvent[],
+    proof: NotificationPreferencesProof,
+  ): Promise<MerchantNotificationPreferences> {
+    return this.put<MerchantNotificationPreferences>(
+      `${API_PATH}/merchants/${encodeURIComponent(address)}/notification-preferences`,
+      { events, ...proof },
+    );
   }
 
   merchantForecast(address: string, days?: number): Promise<ForecastResponse> {

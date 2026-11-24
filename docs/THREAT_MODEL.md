@@ -97,8 +97,9 @@ graph LR
 1. **Internet to the app.** Every request is untrusted. The app sets
    `trust proxy` to one hop, so it expects exactly one proxy in front of it
    (7.6).
-2. **Merchant to the webhook routes.** The only routes that change state on a
-   caller's request. A merchant must prove control of the address it names.
+2. **Merchant to merchant-management routes.** Webhook management and
+   notification preferences change state on a caller's request. The merchant
+   must prove control of the account it names.
 3. **Operator to `/admin`.** Routes that run passes, pause the indexer and
    delete data. They exist only when an admin token is configured.
 4. **Service to webhook receivers.** The service makes outbound requests to
@@ -117,7 +118,7 @@ graph LR
 | Public read API | `GET /api/v1/{plans,mandates,due,merchants,subscribers,stats,protocol,vault,tokens,events}…`, `GET /api/v1/mandates/:id/attempts`, `GET /api/v1/keeper` (with the keeper on) | None | Read-only views of the projection. Rate-limited per IP. |
 | Event stream | `GET /api/v1/stream` | None | Server-sent events; at most 100 open streams per stream router (7.7). |
 | SEP-10 sign-in | `GET`/`POST /api/v1/auth` | None to ask; the signed challenge to exchange | Mounted only with `SEP10_SIGNING_KEY`, `SEP10_JWT_SECRET` and `SEP10_HOME_DOMAIN` set. CORS `*` on these paths, as SEP-10 requires. |
-| Webhook management | `POST /api/v1/webhooks`, `GET /api/v1/webhooks`, `DELETE /api/v1/webhooks/:id`, `POST /api/v1/webhooks/:id/{rotate,test}`, `GET /api/v1/webhooks/:id/deliveries` | Merchant signature or SEP-10 JWT | The only writes a caller can make. |
+| Merchant management | `POST /api/v1/webhooks`, `GET /api/v1/webhooks`, `DELETE /api/v1/webhooks/:id`, `POST /api/v1/webhooks/:id/{rotate,test}`, `GET /api/v1/webhooks/:id/deliveries`, `GET`/`PUT /api/v1/merchants/:address/notification-preferences` | Merchant signature or SEP-10 JWT | Writes are scoped to the proven merchant account. |
 | Operator | `POST /admin/{reindex,keeper/run,indexer/pause,indexer/resume,data/prune}`, `GET /admin/{keeper/backoff,audit-logs,past-due}` | Admin bearer token | Absent (404) without `ADMIN_TOKEN`/`ADMIN_TOKENS`. Not rate-limited (7.1). |
 | Probes and metadata | `GET /health`, `/ready`, `/version` | None | `/health` includes the RPC endpoint URLs (7.5). |
 | Metrics | `GET /metrics` | None | Only with `METRICS_ENABLED=true` (7.12). |
@@ -140,17 +141,18 @@ this model and needs authentication of its own.
 
 ### Merchants
 
-A webhook route acts for exactly one merchant address, proven in one of two
-ways (`src/routes/webhooks.ts`, `src/routes/auth.ts`):
+Merchant-only routes act for exactly one merchant address, proven in one of
+two ways (`src/routes/webhooks.ts`, `src/routes/notification-preferences.ts`,
+`src/routes/auth.ts`):
 
 - **A signed message.** The merchant signs
   `<prefix>:<merchant>[:<url or id>]:<timestamp>` with the address's key and
   sends the base64 ed25519 signature. Each operation has its own prefix
-  (`payflow-webhook`, `-list`, `-delete`, `-rotate`, `-test`, `-deliveries`,
-  each `:v1`), so a signature for one operation cannot be replayed as
-  another, and a registration signature covers the URL, so it cannot be
-  reused for a different URL. The timestamp must be within ten minutes of the
-  server's clock.
+  (`payflow-webhook` operation-specific prefixes and
+  `payflow-notification-preferences:{get,set}:v1`), so a signature for one
+  operation cannot be replayed as another. Registration signatures cover the
+  URL; preference updates cover the sorted event list. The timestamp must be
+  within ten minutes of the server's clock.
 - **A SEP-10 JWT.** `GET /api/auth` issues a challenge valid for fifteen
   minutes; `POST /api/auth` exchanges the signed challenge for an HS256 JWT
   whose `sub` is the account and whose `iss` names this network's auth
@@ -162,9 +164,9 @@ ways (`src/routes/webhooks.ts`, `src/routes/auth.ts`):
   challenge yields at most one token per process (7.9). Tokens live
   `SEP10_JWT_TTL_S` (60 s to 24 h, default 1 h).
 
-Under a JWT, a `merchant` in the request, when present, must equal the
-token's account. A webhook id that does not exist or belongs to another
-merchant is a 404, so ids of other merchants are not revealed.
+Under a JWT, the merchant address in the path must equal the token's account.
+A webhook id that does not exist or belongs to another merchant is a 404, so
+ids of other merchants are not revealed.
 
 ### Operators
 
@@ -365,9 +367,9 @@ beside the name.
 - **CORS.** `CORS_ORIGIN` (default `*`) applies to the API; SEP-10 paths are
   always `*`, as the spec requires. No route reads a cookie, so a permissive
   origin does not expose an authenticated session.
-- **Caching.** Read routes answer `Cache-Control: public, max-age=5`; the
-  webhook listing, SEP-10 answers, the stream, `/health` and `/ready` are
-  `no-store`.
+- **Caching.** Read routes answer `Cache-Control: public, max-age=5`; webhook
+  management, notification preferences, SEP-10 answers, the stream,
+  `/health` and `/ready` are `no-store`.
 - **Signed deliveries.** Each webhook delivery carries an HMAC-SHA256
   `Payflow-Signature` over the payload and an `Idempotency-Key`. A rotated
   secret keeps signing beside the new one for `WEBHOOK_SECRET_OVERLAP_S`. The

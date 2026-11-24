@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { test, describe, before, after } from "node:test";
 import type { Server } from "node:http";
+import { Keypair } from "@stellar/stellar-sdk";
 import { openDatabase } from "../src/lib/db.ts";
 import { createApp } from "../src/app.ts";
 import { Indexer } from "../src/indexer.ts";
 import { PayflowClient, PayflowApiError } from "../src/client/index.ts";
 import type { Config } from "../src/config.ts";
 import type { DecodedEvent } from "../src/lib/stellar.ts";
+import type { NotificationEvent } from "../src/routes/types.ts";
 import { testAddress } from "./addresses.ts";
 
 const MERCHANT = "GB343X4K4TIYARSAAQZ55RIZY2YLFNOQCM3LNQSRBV56TMVGIF55WCOH";
@@ -124,6 +126,36 @@ describe("typed api client", () => {
     assert.equal(stats.totalCollected, "9900000");
     assert.equal(stats.totalCharges, 1);
     assert.equal(stats.averageChargesPerMandate, 1);
+  });
+
+  test("gets and sets signed merchant notification preferences", async () => {
+    const key = Keypair.random();
+    const address = key.publicKey();
+    const timestamp = Math.floor(Date.now() / 1000);
+    const getSignature = Buffer.from(
+      key.sign(Buffer.from(`payflow-notification-preferences:get:v1:${address}:${timestamp}`)),
+    ).toString("base64");
+    const initial = await client.merchantNotificationPreferences(address, {
+      timestamp,
+      signature: getSignature,
+    });
+    assert.deepEqual(initial.events, ["charged", "charge.failing", "charge.recovered"]);
+    assert.equal(initial.updatedAt, null);
+
+    const events: NotificationEvent[] = ["charged"];
+    const putSignature = Buffer.from(
+      key.sign(
+        Buffer.from(
+          `payflow-notification-preferences:set:v1:${address}:${events.join(",")}:${timestamp}`,
+        ),
+      ),
+    ).toString("base64");
+    const updated = await client.setMerchantNotificationPreferences(address, events, {
+      timestamp,
+      signature: putSignature,
+    });
+    assert.deepEqual(updated.events, events);
+    assert.ok(updated.updatedAt !== null);
   });
 
   test("fetches the merchant churn report", async () => {

@@ -1,8 +1,9 @@
 import { EventEmitter } from "node:events";
-import { rpc, xdr } from "@stellar/stellar-sdk";
+import { rpc, StrKey, xdr } from "@stellar/stellar-sdk";
 import type { Config, NetworkConfig } from "./config.ts";
 import type { Storage } from "./lib/store/types.ts";
 import { asStorage } from "./lib/store/index.ts";
+import { openDatabase } from "./lib/db.ts";
 import { updateActivePlanSubscriber, type ActivePlanSubscriber } from "./lib/plan-subscribers.ts";
 
 export type IndexerConfig = Config | NetworkConfig;
@@ -18,9 +19,22 @@ import {
 } from "./lib/stellar.ts";
 import { logger } from "./lib/logger.ts";
 import { metrics, publishBusinessMetrics, publishIndexerMetrics } from "./lib/metrics.ts";
-import { defaultMerchantSummaryCache, type MerchantSummaryCache } from "./routes/index.ts";
+import { defaultMerchantSummaryCache, MerchantSummaryCache } from "./routes/index.ts";
 
 export { parseCloseTime };
+
+async function insertRows(
+  storage: Storage,
+  table: string,
+  columns: readonly string[],
+  rows: Record<string, unknown>[],
+): Promise<void> {
+  const placeholders = columns.map(() => "?").join(", ");
+  const sql = `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${placeholders})`;
+  for (const row of rows) {
+    await storage.run(sql, columns.map((column) => row[column]));
+  }
+}
 
 /** RPC caps a single getEvents window; stay well inside it. */
 const LEDGER_WINDOW = 8_000;
@@ -632,6 +646,175 @@ export class Indexer {
         if (decoded && (await this.apply(decoded, storage)) === "applied") applied += 1;
       }
       return applied;
+    });
+  }
+
+  /**
+   * Rebuild one merchant's projection from retained raw events without
+   * changing other merchants or operational tables.
+   */
+  async rebuildMerchantProjections(merchant: string): Promise<number> {
+    if (!StrKey.isValidEd25519PublicKey(merchant)) {
+      throw new Error("merchant must be a valid Stellar account address");
+    }
+
+    const rawEvents = await this.db.all<{
+      event_id: string;
+      contract_id: string;
+      ledger: number;
+      tx_hash: string;
+      event_index: string;
+      topics: string;
+      data: string;
+      close_time: number | null;
+    }>(
+      `SELECT event_id, contract_id, ledger, tx_hash, event_index, topics, data, close_time
+       FROM events ORDER BY ledger, event_id`,
+    );
+    const scratchDb = openDatabase(":memory:");
+    const scratchStorage = asStorage(scratchDb);
+
+    try {
+      await scratchStorage.transaction(async (storage) => {
+        for (const event of rawEvents) {
+          await storage.run(
+            `INSERT INTO events
+               (event_id, contract_id, ledger, tx_hash, event_index, topics, data, close_time)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              event.event_id,
+              event.contract_id,
+              event.ledger,
+              event.tx_hash,
+              event.event_index,
+              event.topics,
+              event.data,
+              event.close_time,
+            ],
+          );
+        }
+      });
+
+      const scratchIndexer = new Indexer(
+        scratchDb,
+        this.server,
+        this.config,
+        new MerchantSummaryCache(),
+      );
+      const applied = await scratchIndexer.rebuildProjections();
+      await this.replaceMerchantProjection(scratchIndexer.db, merchant);
+      await this.merchantCache.invalidate(merchant);
+      return applied;
+    } finally {
+      scratchDb.close();
+    }
+  }
+
+  private async replaceMerchantProjection(source: Storage, merchant: string): Promise<void> {
+    const plans = await source.all<Record<string, unknown>>(
+      "SELECT id, merchant, name, token, amount, period, active, ledger FROM plans WHERE merchant = ?",
+      [merchant],
+    );
+    const mandates = await source.all<Record<string, unknown>>(
+      `SELECT id, subscriber, merchant, plan_id, amount, period, next_charge, last_charge,
+              charges_made, max_charges, fee_bps, status, ended_by, ledger
+       FROM mandates WHERE merchant = ?`,
+      [merchant],
+    );
+    const charges = await source.all<Record<string, unknown>>(
+      `SELECT tx_hash, mandate_id, subscriber, merchant, amount, fee, charges_made,
+              next_charge, ledger, created_at
+       FROM charges WHERE merchant = ?`,
+      [merchant],
+    );
+    const mandateEvents = await source.all<Record<string, unknown>>(
+      "SELECT mandate_id, slot, merchant, kind, at, ledger FROM mandate_events WHERE merchant = ?",
+      [merchant],
+    );
+    const profile = await source.all<Record<string, unknown>>(
+      "SELECT merchant, name, url, ledger FROM merchant_profiles WHERE merchant = ?",
+      [merchant],
+    );
+
+    const planIds = plans.map((row) => row.id);
+    const planMemberships: Record<string, unknown>[] = [];
+    const planCounts: Record<string, unknown>[] = [];
+    for (const planId of planIds) {
+      planMemberships.push(
+        ...(await source.all<Record<string, unknown>>(
+          "SELECT plan_id, subscriber, mandate_count FROM plan_active_subscribers WHERE plan_id = ?",
+          [planId],
+        )),
+      );
+      planCounts.push(
+        ...(await source.all<Record<string, unknown>>(
+          "SELECT plan_id, active_subscribers FROM plan_subscriber_counts WHERE plan_id = ?",
+          [planId],
+        )),
+      );
+    }
+
+    const mandateIds = mandates.map((row) => row.id);
+    const mandateTimeline: Record<string, unknown>[] = [];
+    for (const mandateId of mandateIds) {
+      mandateTimeline.push(
+        ...(await source.all<Record<string, unknown>>(
+          "SELECT mandate_id, tx_hash, kind, ledger, at, details FROM mandate_timeline WHERE mandate_id = ?",
+          [mandateId],
+        )),
+      );
+    }
+
+    const columns = {
+      plans: ["id", "merchant", "name", "token", "amount", "period", "active", "ledger"],
+      mandates: [
+        "id", "subscriber", "merchant", "plan_id", "amount", "period", "next_charge",
+        "last_charge", "charges_made", "max_charges", "fee_bps", "status", "ended_by", "ledger",
+      ],
+      plan_active_subscribers: ["plan_id", "subscriber", "mandate_count"],
+      plan_subscriber_counts: ["plan_id", "active_subscribers"],
+      charges: [
+        "tx_hash", "mandate_id", "subscriber", "merchant", "amount", "fee",
+        "charges_made", "next_charge", "ledger", "created_at",
+      ],
+      mandate_events: ["mandate_id", "slot", "merchant", "kind", "at", "ledger"],
+      mandate_timeline: ["mandate_id", "tx_hash", "kind", "ledger", "at", "details"],
+      merchant_profiles: ["merchant", "name", "url", "ledger"],
+    } satisfies Record<string, string[]>;
+
+    await this.db.transaction(async (storage) => {
+      const previousPlans = await storage.all<{ id: unknown }>(
+        "SELECT id FROM plans WHERE merchant = ?",
+        [merchant],
+      );
+      const previousMandates = await storage.all<{ id: unknown }>(
+        "SELECT id FROM mandates WHERE merchant = ?",
+        [merchant],
+      );
+      const planIdsToReplace = new Set([...previousPlans.map((row) => row.id), ...planIds]);
+      const mandateIdsToReplace = new Set([...previousMandates.map((row) => row.id), ...mandateIds]);
+
+      for (const planId of planIdsToReplace) {
+        await storage.run("DELETE FROM plan_active_subscribers WHERE plan_id = ?", [planId]);
+        await storage.run("DELETE FROM plan_subscriber_counts WHERE plan_id = ?", [planId]);
+      }
+      for (const mandateId of mandateIdsToReplace) {
+        await storage.run("DELETE FROM mandate_timeline WHERE mandate_id = ?", [mandateId]);
+      }
+      await storage.run("DELETE FROM plans WHERE merchant = ?", [merchant]);
+      await storage.run("DELETE FROM mandates WHERE merchant = ?", [merchant]);
+      await storage.run("DELETE FROM charges WHERE merchant = ?", [merchant]);
+      await storage.run("DELETE FROM mandate_events WHERE merchant = ?", [merchant]);
+      await storage.run("DELETE FROM merchant_profiles WHERE merchant = ?", [merchant]);
+
+      await insertRows(storage, "plans", columns.plans, plans);
+      await insertRows(storage, "mandates", columns.mandates, mandates);
+      await insertRows(storage, "plan_active_subscribers", columns.plan_active_subscribers, planMemberships);
+      await insertRows(storage, "plan_subscriber_counts", columns.plan_subscriber_counts, planCounts);
+      await insertRows(storage, "charges", columns.charges, charges);
+      await insertRows(storage, "mandate_events", columns.mandate_events, mandateEvents);
+      await insertRows(storage, "mandate_timeline", columns.mandate_timeline, mandateTimeline);
+      await insertRows(storage, "merchant_profiles", columns.merchant_profiles, profile);
     });
   }
 

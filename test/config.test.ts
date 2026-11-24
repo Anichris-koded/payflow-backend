@@ -175,6 +175,40 @@ describe("keeper dry-run configuration", () => {
   });
 });
 
+describe("required credentials", () => {
+  test("refuses to enable the keeper without its signing secret", () => {
+    assert.throws(
+      () => loadConfig(env({ KEEPER_ENABLED: "true" })),
+      /KEEPER_ENABLED=true requires KEEPER_SECRET to be set/,
+    );
+  });
+
+  test("starts the keeper when its secret is present", () => {
+    const secret = Keypair.random().secret();
+    assert.equal(
+      loadConfig(env({ KEEPER_ENABLED: "true", KEEPER_SECRET: secret })).KEEPER_ENABLED,
+      true,
+    );
+  });
+
+  test("refuses to configure SEP-10 without its JWT secret and home domain", () => {
+    assert.throws(
+      () => loadConfig(env({ SEP10_SIGNING_KEY: Keypair.random().secret() })),
+      /SEP10_SIGNING_KEY requires SEP10_JWT_SECRET and SEP10_HOME_DOMAIN to be set/,
+    );
+  });
+
+  test("starts SEP-10 when all required credentials are present", () => {
+    assert.doesNotThrow(() =>
+      loadConfig(env({
+        SEP10_SIGNING_KEY: Keypair.random().secret(),
+        SEP10_JWT_SECRET: "a".repeat(32),
+        SEP10_HOME_DOMAIN: "example.com",
+      })),
+    );
+  });
+});
+
 const ID = VALID_CONTRACT_ID;
 
 /** Environment holding only what the default network needs. */

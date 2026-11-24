@@ -27,6 +27,7 @@
     "cli": "node --experimental-strip-types src/cmd/cli.ts",
     "seed": "node --experimental-strip-types src/cmd/seed.ts",
     "test": "node --experimental-strip-types --test test/*.test.ts",
+    "openapi:validate": "node --experimental-strip-types --test test/openapi-validation.test.ts",
     "test:coverage": "node --experimental-strip-types --experimental-test-coverage --test-coverage-include=src/** --test-coverage-lines=94 --test-reporter=tap --test-reporter=lcov --test-reporter-destination=stdout --test-reporter-destination=lcov.info --test test/*.test.ts",
     "typecheck": "npm run typecheck:src && npm run typecheck:test",
     "typecheck:src": "tsc --noEmit -p tsconfig.json",
@@ -52,6 +53,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@apidevtools/swagger-parser": "^13.1.0",
     "@types/compression": "^1.8.1",
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.6",

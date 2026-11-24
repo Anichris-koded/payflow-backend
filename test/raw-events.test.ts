@@ -4,8 +4,10 @@ import { nativeToScVal, type rpc } from "@stellar/stellar-sdk";
 import { openDatabase } from "../src/lib/db.ts";
 import { Indexer, type IndexerRpc } from "../src/indexer.ts";
 import type { NetworkConfig } from "../src/config.ts";
+import { testAddress } from "./addresses.ts";
 
 const merchant = "GB343X4K4TIYARSAAQZ55RIZY2YLFNOQCM3LNQSRBV56TMVGIF55WCOH";
+const otherMerchant = testAddress(12);
 const contract = "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC";
 const config: NetworkConfig = {
   name: "testnet",
@@ -18,7 +20,12 @@ const config: NetworkConfig = {
   databasePath: ":memory:",
 };
 
-function event(name: string, id: string): rpc.Api.EventResponse {
+function event(
+  name: string,
+  id: string,
+  owner = merchant,
+  planId = 1n,
+): rpc.Api.EventResponse {
   return {
     id,
     ledger: 2,
@@ -26,8 +33,8 @@ function event(name: string, id: string): rpc.Api.EventResponse {
     contractId: contract,
     topic: [
       nativeToScVal(name, { type: "symbol" }),
-      nativeToScVal(merchant, { type: "address" }),
-      nativeToScVal(1n, { type: "u64" }),
+      nativeToScVal(owner, { type: "address" }),
+      nativeToScVal(planId, { type: "u64" }),
     ],
     value: nativeToScVal({
       token: contract, amount: 999999999999999999999n, period: 60n, name: "Plan",
@@ -68,6 +75,50 @@ test("all raw events survive overlapping windows; rebuild restores identical pro
     assert.deepEqual(db.prepare("SELECT * FROM plans").all(), original);
     assert.equal(await indexer.rebuildProjections(), 1);
     assert.deepEqual(db.prepare("SELECT * FROM plans").all(), original);
+  } finally {
+    db.close();
+  }
+});
+
+test("a merchant projection rebuild leaves other merchants' projections unchanged", async () => {
+  const db = openDatabase(":memory:");
+  try {
+    const history = [
+      event("plan_created", "0002-0001", merchant, 1n),
+      event("plan_created", "0002-0002", otherMerchant, 2n),
+    ];
+    const rpcStub = {
+      getLatestLedger: async () => ({ sequence: 4 }),
+      getHealth: async () => ({ oldestLedger: 1 }),
+      getEvents: async () => ({ events: history, cursor: undefined }),
+    } as unknown as IndexerRpc;
+    const indexer = new Indexer(db, rpcStub, config);
+    await indexer.tick();
+
+    db.prepare("UPDATE plans SET name = 'stale' WHERE merchant = ?").run(merchant);
+    db.prepare("UPDATE plans SET name = 'preserve' WHERE merchant = ?").run(otherMerchant);
+    assert.equal(await indexer.rebuildMerchantProjections(merchant), 2);
+
+    assert.equal(
+      (db.prepare("SELECT name FROM plans WHERE merchant = ?").get(merchant) as { name: string }).name,
+      "Plan",
+    );
+    assert.equal(
+      (db.prepare("SELECT name FROM plans WHERE merchant = ?").get(otherMerchant) as { name: string }).name,
+      "preserve",
+    );
+
+    assert.equal(await indexer.rebuildMerchantProjections(merchant), 2);
+    assert.equal(
+      (db.prepare("SELECT name FROM plans WHERE merchant = ?").get(merchant) as { name: string }).name,
+      "Plan",
+    );
+    assert.equal(
+      (db.prepare("SELECT name FROM plans WHERE merchant = ?").get(otherMerchant) as { name: string }).name,
+      "preserve",
+    );
+
+    await assert.rejects(indexer.rebuildMerchantProjections("not-a-merchant"), /valid Stellar account address/);
   } finally {
     db.close();
   }

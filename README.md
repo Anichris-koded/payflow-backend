@@ -137,6 +137,17 @@ Index until caught up with the network, then exit (cron, backfills):
 npm run indexer
 ```
 
+Rebuild projections from locally retained raw events while preserving the
+other merchants' projections (stop the API and indexer first):
+
+```bash
+npm run rebuild:projections -- --merchant G...
+```
+
+Omitting `--merchant` rebuilds every projection. This command can only
+reconstruct history still present in the `events` table; it does not fetch
+missing history from the network.
+
 Run one settlement pass and exit (needs `KEEPER_SECRET`):
 
 ```bash
@@ -395,7 +406,8 @@ unversioned `/api/<network>/...` paths remain as aliases.
 | `GET` | `/api/mandates/:id/charges?from=&to=` | Settlement history, optionally bounded by ledger close time |
 | `GET` | `/api/mandates/:id/attempts?limit=` | The keeper's charge attempts over the last 90 days, newest first: result (`settled`, `failed`, `skipped`), error code, tx hash, vault shortfall, failure streak and next retry |
 | `GET` | `/api/stream?merchant=&subscriber=` | Server-sent `charged`, `subscribed`, `cancelled` and `mandate_ended` events (25-second heartbeat) |
-| `POST` | `/api/webhooks` | Register a URL to receive signed `charged` events; proves control of the merchant address with a signature |
+| `POST` | `/api/webhooks` | Register a URL to receive signed merchant notifications; proves control of the merchant address with a signature |
+| `GET` / `PUT` | `/api/merchants/:address/notification-preferences` | Read or set the webhook events enabled for a merchant (`charged`, `charge.failing`, `charge.recovered`); signed merchant proof or SEP-10 bearer token required |
 | `POST` | `/api/webhooks/:id/rotate` | Replace a webhook's signing secret; both secrets sign during the overlap |
 | `POST` | `/api/webhooks/:id/test` | Send a signed `ping` through the normal delivery path; returns status code and latency |
 | `GET` | `/api/webhooks/:id/deliveries` | The webhook's last 100 delivery attempts: event, status code, error, attempt, next retry |
@@ -418,6 +430,16 @@ unversioned `/api/<network>/...` paths remain as aliases.
 | `GET` | `/api/subscribers/:address/charges.csv?from=&to=` | CSV of the subscriber's payments: date, merchant, plan, amount, fee and tx hash |
 | `GET` | `/api/subscribers/:address/upcoming?days=30` | Charges due over the next N days, with projected times |
 | `GET` | `/api/stats` | Protocol totals, charge volume, fees and last indexed ledger |
+
+Merchant webhook preferences default to all supported events:
+`charged`, `charge.failing` and `charge.recovered`. `PUT
+/api/merchants/:address/notification-preferences` replaces that list (an empty
+array disables deliveries); `GET` reads it. Both endpoints require either a
+SEP-10 bearer token for the merchant or a fresh ed25519 signature. The signed
+GET message is
+`payflow-notification-preferences:get:v1:<merchant>:<timestamp>`; the signed
+PUT message is
+`payflow-notification-preferences:set:v1:<merchant>:<sorted comma-separated events>:<timestamp>`.
 
 `/api/mandates` also accepts `ids`, a comma-separated batch of up to 100
 mandate ids (`?ids=1,2,3`). Ids that do not exist are omitted; more than 100
@@ -990,6 +1012,11 @@ examined without API downtime.
 | `SEP10_HOME_DOMAIN` | — | Home domain of the challenge (`<home domain> auth`); required with `SEP10_SIGNING_KEY` |
 | `SEP10_WEB_AUTH_DOMAIN` | `SEP10_HOME_DOMAIN` | Domain serving `/api/auth`, the challenge's `web_auth_domain` |
 | `SEP10_JWT_TTL_S` | `3600` | JWT lifetime in seconds (60–86400) |
+
+Startup refuses `KEEPER_ENABLED=true` without `KEEPER_SECRET`, and refuses a
+configured `SEP10_SIGNING_KEY` without `SEP10_JWT_SECRET` and
+`SEP10_HOME_DOMAIN`. The features remain optional when their enabling
+credentials are unset.
 
 Setting `OTEL_EXPORTER_OTLP_ENDPOINT` exports OpenTelemetry spans for every
 RPC call (`rpc.<method>`), indexer and keeper pass, and HTTP request. Every
